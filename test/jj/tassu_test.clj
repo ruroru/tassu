@@ -1,6 +1,6 @@
 (ns jj.tassu-test
   (:require [clojure.test :refer :all]
-            [jj.tassu :as router :refer [GET]]))
+            [jj.tassu :as router :refer [GET HEAD PUT PATCH POST DELETE]]))
 
 (def default-not-found {:status  404
                         :body    "Not found"
@@ -89,6 +89,24 @@
     (is (= {:status 200 :body "Admin user"}
            (app (request "/users/admin"))))))
 
+
+(deftest test-methods
+  (let [app (router/route {
+                           "/" [(HEAD (fn [req] {:status 200 :body "head method"}))
+                                (POST (fn [req] {:status 200 :body "post method"}))
+                                (PUT (fn [req] {:status 200 :body "put method"}))
+                                (DELETE (fn [req] {:status 200 :body "delete method"}))
+                                (PATCH (fn [req] {:status 200 :body "patch method"}))
+                                (GET (fn [req] {:status 200 :body "get method"}))]})]
+    (are [expected-response method] (= expected-response (app (request "/" method)))
+                                    {:status 200 :body "get method"} :get
+                                    {:status 200 :body "head method"} :head
+                                    {:status 200 :body "put method"} :put
+                                    {:status 200 :body "patch method"} :patch
+                                    {:status 200 :body "post method"} :post
+                                    {:status 200 :body "delete method"} :delete)))
+
+
 (deftest route-speed
   (let [app (router/route {"/users/admin"
                            [{:method  :get
@@ -109,8 +127,7 @@
       (app (request "/users3/admin")))
     (Thread/sleep 1000)
 
-    (time (doseq [_ (range 40000)]
+    (time (doseq [_ (range 400000)]
             (app (request "/users/admin"))
-            (app (request "/users1/admin"))
-            (app (request "/users2/admin"))
-            (app (request "/users3/admin"))))))
+
+            ))))
