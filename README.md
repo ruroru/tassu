@@ -5,7 +5,7 @@ Tassu is a ring router
 Add tassu to dependency list
 
 ```clojure
-[org.clojars.jj/tassu "0.1.0-SNAPSHOT"]
+[org.clojars.jj/tassu "1.0.0"]
 ```
 
 ## Usage
