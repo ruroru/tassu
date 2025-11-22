@@ -3,5 +3,9 @@
   "extends": [
     "config:recommended"
   ],
-  "baseBranches": ["master"]
+  "baseBranches": ["master"],
+  "dependencyDashboard": false,
+  "automerge": true,
+  "automergeType": "pr",
+  "automergeStrategy": "squash"
 }
