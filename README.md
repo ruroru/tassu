@@ -1,37 +1,59 @@
 # Tassu
 Tassu is a ring router
 
-## installation
+## Installation
 Add tassu to dependency list
-
 ```clojure
 [org.clojars.jj/tassu "1.0.2"]
 ```
 
 ## Usage
 
+### Sync
 ```clojure
 (ns jj
   (:require
     [jj.tassu :refer [route DELETE GET]]))
 
 (def handler
-  (route {"/"             [(GET (fn [req]
-                                  {:status 200
-                                   :body   "Foo"}))]
-          "/get/version"  [(GET (fn [req]
-                                  {:status 200
-                                   :body   "1.0.0"}))]
+  (route {"/"            [(GET (fn [req]
+                                 {:status 200
+                                  :body   "Foo"}))]
+          "/get/version" [(GET (fn [req]
+                                 {:status 200
+                                  :body   "1.0.0"}))]
           "/users/:user" [(DELETE (fn [req]
-                                     {:headers {"foo" "bar"}
-                                      :status  201
-                                      :body    "Baz"}))]}))
+                                    {:headers {"foo" "bar"}
+                                     :status  201
+                                     :body    "Baz"}))]}))
 ```
-and in the server 
 ```clojure
 (server/run-http-server handler {:port 8888})
 ```
 
+### Async
+```clojure
+(ns jj
+  (:require
+    [jj.tassu :refer [async-route DELETE GET]]))
+
+(def handler
+  (async-route {"/"            [(GET (fn [req res rej]
+                                       (res {:status 200
+                                             :body   "Foo"})))]
+                "/get/version" [(GET (fn [req res rej]
+                                       (res {:status 200
+                                             :body   "1.0.0"})))]
+                "/users/:user" [(DELETE (fn [req res rej]
+                                          (res {:headers {"foo" "bar"}
+                                                :status  201
+                                                :body    "Baz"})))]}))
+```
+```clojure
+(server/run-http-server handler {:port 8888 :async? true})
+```
+
+Async handlers follow the standard Ring async signature `[request respond raise]`. Call `respond` with a response map on success, or `raise` with a `Throwable` on failure. The server adapter must support Ring async — Jetty, http-kit, and Aleph all do.
 
 ## License
 
