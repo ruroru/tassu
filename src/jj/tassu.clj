@@ -95,11 +95,22 @@
         match
         (recur (rest routes))))))
 
+(def ^:private not-found
+  {:status  404
+   :body    "Not found"
+   :headers {"content-type" "text/html"}})
+
+(defn- resolve-match [static-cache param-routes request]
+  (let [method (:request-method request)
+        uri    (:uri request)]
+    (if-let [handler (get-in static-cache [uri method])]
+      {:handler handler :params {}}
+      (find-param-route-match param-routes uri method))))
+
 (defn route
   [route-specs]
   (let [static-cache (create-static-cache route-specs)
         param-routes (create-param-routes route-specs)]
-
     (fn [request]
       (let [method (:request-method request)
             uri (:uri request)]
@@ -113,6 +124,15 @@
             {:status  404
              :body    "Not found"
              :headers {"content-type" "text/html"}}))))))
+
+(defn async-route
+  [route-specs]
+  (let [static-cache (create-static-cache route-specs)
+        param-routes (create-param-routes route-specs)]
+    (fn [request respond raise]
+      (if-let [{:keys [handler params]} (resolve-match static-cache param-routes request)]
+        (handler (assoc request :params params) respond raise)
+        (respond not-found)))))
 
 (defn- create-route [method handler]
   {:method method :handler handler})
