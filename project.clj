@@ -1,4 +1,4 @@
-(defproject org.clojars.jj/tassu "1.0.3-SNAPSHOT"
+(defproject org.clojars.jj/tassu "1.0.3"
   :description "A routing library for clojure ring"
   :url "https://github.com/ruroru/tassu"
   :license {:name "EPL-2.0"
