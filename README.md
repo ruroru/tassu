@@ -4,7 +4,7 @@ Tassu is a ring router
 ## Installation
 Add tassu to dependency list
 ```clojure
-[org.clojars.jj/tassu "1.0.3"]
+[org.clojars.jj/tassu "1.0.4"]
 ```
 
 ## Usage
