@@ -96,3 +96,125 @@
                            {:status 200 :body "post method"}   :post
                            {:status 200 :body "delete method"} :delete)))
 
+
+(defn request-with-query-params
+  ([uri query-params]
+   (request-with-query-params uri :get query-params))
+  ([uri method query-params]
+   {:headers        {"key" "value"}
+    :request-method method
+    :query-string   query-params
+    :uri            uri}))
+
+(deftest query-params-routing
+  (let [app (router/async-route {"/" [{:method       :get
+                                       :query-params "category=shoes&size=10"
+                                       :handler      (fn [req res rej]
+                                                       (res {:status 200 :body "matched"}))}
+                                      {:method  :get
+                                       :handler (fn [req res rej]
+                                                  (res {:status 200 :body "no-query-params"}))}]})]
+    (testing "no query params behaves normally"
+      (is (= {:status 200 :body "no-query-params"}
+             (call-async app (request "/")))))
+    (testing "Query param order does not matter"
+      (is (= {:status 200 :body "matched"}
+             (call-async app (request-with-query-params "/" "category=shoes&size=10"))))
+      (is (= {:status 200 :body "matched"}
+             (call-async app (request-with-query-params "/" "size=10&category=shoes")))))))
+
+(deftest async-query-params-parsed-on-request
+  (let [app (router/async-route {"/" [{:method       :get
+                                       :query-params "name=alice&age=30"
+                                       :handler      (fn [req res rej]
+                                                       (is (= {:name "alice" :age "30"} (:query-params req)))
+                                                       (res {:status 200 :body "ok"}))}]})]
+    (is (= {:status 200 :body "ok"}
+           (call-async app (request-with-query-params "/" "age=30&name=alice"))))))
+
+(deftest async-query-params-empty-when-no-qp-spec
+  (let [app (router/async-route {"/" [{:method  :get
+                                       :handler (fn [req res rej]
+                                                  (is (= {} (:query-params req)))
+                                                  (res {:status 200 :body "ok"}))}]})]
+    (is (= {:status 200 :body "ok"}
+           (call-async app (request "/"))))))
+
+(deftest async-query-params-no-match-falls-back
+  (let [app (router/async-route {"/" [{:method       :get
+                                       :query-params "foo=bar"
+                                       :handler      (fn [req res rej]
+                                                       (res {:status 200 :body "matched-foo"}))}
+                                      {:method  :get
+                                       :handler (fn [req res rej]
+                                                  (is (= {:baz "qux"} (:query-params req)))
+                                                  (res {:status 200 :body "fallback"}))}]})]
+    (is (= {:status 200 :body "fallback"}
+           (call-async app (request-with-query-params "/" "baz=qux"))))))
+
+(deftest async-query-params-with-parameterized-values
+  (let [app (router/async-route {"/" [{:method       :get
+                                       :query-params "action=:action&id=:id"
+                                       :handler      (fn [req res rej]
+                                                       (is (= {:action "delete" :id "42"} (:query-params req)))
+                                                       (res {:status 200 :body "parameterized"}))}
+                                      {:method  :get
+                                       :handler (fn [req res rej]
+                                                  (res {:status 200 :body "fallback"}))}]})]
+    (is (= {:status 200 :body "parameterized"}
+           (call-async app (request-with-query-params "/" "action=delete&id=42"))))
+    (is (= {:status 200 :body "fallback"}
+           (call-async app (request-with-query-params "/" "action=delete"))))))
+
+(deftest async-query-params-on-parameterized-routes
+  (let [app (router/async-route {"/users/:id" [{:method       :get
+                                                :query-params "detail=full"
+                                                :handler      (fn [req res rej]
+                                                                (is (= "42" (:id (:params req))))
+                                                                (is (= {:detail "full"} (:query-params req)))
+                                                                (res {:status 200 :body "full-detail"}))}
+                                               {:method  :get
+                                                :handler (fn [req res rej]
+                                                           (is (= "42" (:id (:params req))))
+                                                           (is (= {} (:query-params req)))
+                                                           (res {:status 200 :body "summary"}))}]})]
+    (is (= {:status 200 :body "full-detail"}
+           (call-async app (request-with-query-params "/users/42" "detail=full"))))
+    (is (= {:status 200 :body "summary"}
+           (call-async app (request "/users/42"))))))
+
+(deftest async-query-params-value-only
+  (let [app (router/async-route {"/" [{:method       :get
+                                       :query-params "verbose"
+                                       :handler      (fn [req res rej]
+                                                       (is (= {:verbose true} (:query-params req)))
+                                                       (res {:status 200 :body "verbose"}))}
+                                      {:method  :get
+                                       :handler (fn [req res rej]
+                                                  (res {:status 200 :body "default"}))}]})]
+    (is (= {:status 200 :body "verbose"}
+           (call-async app (request-with-query-params "/" "verbose"))))
+    (is (= {:status 200 :body "default"}
+           (call-async app (request "/"))))))
+
+(deftest async-query-params-empty-value
+  (let [app (router/async-route {"/" [{:method       :get
+                                       :query-params "key="
+                                       :handler      (fn [req res rej]
+                                                       (is (= {:key ""} (:query-params req)))
+                                                       (res {:status 200 :body "empty-val"}))}
+                                      {:method  :get
+                                       :handler (fn [req res rej]
+                                                  (res {:status 200 :body "default"}))}]})]
+    (is (= {:status 200 :body "empty-val"}
+           (call-async app (request-with-query-params "/" "key="))))
+    (is (= {:status 200 :body "default"}
+           (call-async app (request "/"))))))
+
+(deftest async-query-params-duplicate-keys
+  (let [app (router/async-route {"/" [{:method  :get
+                                       :handler (fn [req res rej]
+                                                  (res {:status 200
+                                                        :body   (pr-str (:query-params req))}))}]})]
+    (is (= {:status 200 :body "{:a [\"1\" \"2\"]}"}
+           (call-async app (request-with-query-params "/" "a=1&a=2"))))))

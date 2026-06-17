@@ -14,6 +14,15 @@
     :request-method method
     :uri            uri}))
 
+(defn request-with-query-params
+  ([uri query-params]
+   (request-with-query-params uri :get query-params))
+  ([uri method query-params]
+   {:headers        {"key" "value"}
+    :request-method method
+    :query-string query-params
+    :uri            uri}))
+
 
 (deftest router-not-found
   (let [app (router/route {})]
@@ -105,3 +114,168 @@
                                     {:status 200 :body "patch method"} :patch
                                     {:status 200 :body "post method"} :post
                                     {:status 200 :body "delete method"} :delete)))
+
+(deftest query-params-routing
+  (let [app (router/route {"/" [{:method       :get
+                                 :query-params "category=shoes&size=10"
+                                 :handler      (fn [req]
+                                                 {:status 200
+                                                  :body   "query-params-are-shoes-and-10"})}
+                                {:method       :get
+                                 :handler      (fn [req]
+                                                 {:status 200
+                                                  :body   "no-query-params"})}
+
+                                {:method       :get
+                                 :query-params "category=:category&size=:shoe-size"
+                                 :handler      (fn [req]
+                                                 {:status 200
+                                                  :body   "query-params-are-shoes-and-10"})}
+                                ]})]
+
+    (testing "no query params behaves normally"
+      (is (= {:status 200
+              :body   "no-query-params"}
+             (app (request "/" )))))
+
+    (testing "Query param order does not matter"
+      (is (= {:status 200
+              :body   "query-params-are-shoes-and-10"}
+             (app (request-with-query-params "/" "category=shoes&size=10"))))
+
+      (is (= {:status 200
+              :body   "query-params-are-shoes-and-10"}
+             (app (request-with-query-params "/" "size=10&category=shoes")))))))
+
+(deftest query-params-parsed-on-request
+  (let [app (router/route {"/" [{:method       :get
+                                 :query-params "name=alice&age=30"
+                                 :handler      (fn [req]
+                                                 (is (= {:name "alice" :age "30"} (:query-params req)))
+                                                 {:status 200 :body "ok"})}]})]
+    (is (= {:status 200 :body "ok"}
+           (app (request-with-query-params "/" "age=30&name=alice"))))))
+
+(deftest query-params-empty-when-no-qp-spec
+  (let [app (router/route {"/" [{:method  :get
+                                 :handler (fn [req]
+                                            (is (= {} (:query-params req)))
+                                            {:status 200 :body "ok"})}]})]
+    (is (= {:status 200 :body "ok"}
+           (app (request "/"))))))
+
+(deftest query-params-no-match-falls-back
+  (let [app (router/route {"/" [{:method       :get
+                                 :query-params "foo=bar"
+                                 :handler      (fn [req]
+                                                 {:status 200 :body "matched-foo"})}
+                                {:method  :get
+                                 :handler (fn [req]
+                                            (is (= {:baz "qux"} (:query-params req)))
+                                            {:status 200 :body "fallback"})}]})]
+    (testing "non-matching query params fall back to default handler"
+      (is (= {:status 200 :body "fallback"}
+             (app (request-with-query-params "/" "baz=qux")))))))
+
+(deftest query-params-with-parameterized-values
+  (let [app (router/route {"/" [{:method       :get
+                                 :query-params "action=:action&id=:id"
+                                 :handler      (fn [req]
+                                                 (is (= {:action "delete" :id "42"} (:query-params req)))
+                                                 {:status 200 :body "parameterized"})}
+                                {:method  :get
+                                 :handler (fn [req]
+                                            {:status 200 :body "fallback"})}]})]
+    (testing "parameterized query-params match any value"
+      (is (= {:status 200 :body "parameterized"}
+             (app (request-with-query-params "/" "action=delete&id=42")))))
+    (testing "missing param key does not match"
+      (is (= {:status 200 :body "fallback"}
+             (app (request-with-query-params "/" "action=delete")))))))
+
+(deftest query-params-different-methods
+  (let [app (router/route {"/" [{:method       :get
+                                 :query-params "v=1"
+                                 :handler      (fn [req]
+                                                 {:status 200
+                                                  :body   "get-v1"})}
+                                {:method       :post
+                                 :query-params "v=1"
+                                 :handler      (fn [req]
+                                                 {:status 200
+                                                  :body   "post-v1"})}
+                                {:method  :get
+                                 :handler (fn [req]
+                                            {:status 200
+                                             :body   "get-default"})}]})]
+    (is (= {:status 200 :body "get-v1"}
+           (app (request-with-query-params "/" :get "v=1"))))
+    (is (= {:status 200 :body "post-v1"}
+           (app (request-with-query-params "/" :post "v=1"))))
+    (is (= {:status 200 :body "get-default"}
+           (app (request "/"))))))
+
+(deftest query-params-on-parameterized-routes
+  (let [app (router/route {"/users/:id" [{:method       :get
+                                          :query-params "detail=full"
+                                          :handler      (fn [req]
+                                                          (is (= "42" (:id (:params req))))
+                                                          (is (= {:detail "full"} (:query-params req)))
+                                                          {:status 200 :body "full-detail"})}
+                                         {:method  :get
+                                          :handler (fn [req]
+                                                     (is (= "42" (:id (:params req))))
+                                                     (is (= {} (:query-params req)))
+                                                     {:status 200 :body "summary"})}]})]
+    (is (= {:status 200 :body "full-detail"}
+           (app (request-with-query-params "/users/42" "detail=full"))))
+    (is (= {:status 200 :body "summary"}
+           (app (request "/users/42"))))))
+
+
+(deftest query-params-value-only
+  (let [app (router/route {"/" [{:method       :get
+                                 :query-params "verbose"
+                                 :handler      (fn [req]
+                                                 (is (= {:verbose true} (:query-params req)))
+                                                 {:status 200 :body "verbose"})}
+                                {:method  :get
+                                 :handler (fn [req]
+                                            {:status 200 :body "default"})}]})]
+    (is (= {:status 200 :body "verbose"}
+           (app (request-with-query-params "/" "verbose"))))
+    (is (= {:status 200 :body "default"}
+           (app (request "/"))))))
+
+(deftest query-params-empty-value
+  (let [app (router/route {"/" [{:method       :get
+                                 :query-params "key="
+                                 :handler      (fn [req]
+                                                 (is (= {:key ""} (:query-params req)))
+                                                 {:status 200 :body "empty-val"})}
+                                {:method  :get
+                                 :handler (fn [req]
+                                            {:status 200 :body "default"})}]})]
+    (is (= {:status 200 :body "empty-val"}
+           (app (request-with-query-params "/" "key="))))
+    (is (= {:status 200 :body "default"}
+           (app (request "/"))))))
+
+(deftest query-params-duplicate-keys
+  (let [app (router/route {"/" [{:method  :get
+                                 :handler (fn [req]
+                                            {:status 200
+                                             :body   (pr-str (:query-params req))})}]})]
+    (is (= {:status 200 :body "{:a [\"1\" \"2\"]}"}
+           (app (request-with-query-params "/" "a=1&a=2"))))))
+
+(deftest query-params-empty-query-string
+  (let [app (router/route {"/" [{:method       :get
+                                 :query-params "x=1"
+                                 :handler      (fn [req]
+                                                 {:status 200 :body "matched"})}
+                                {:method  :get
+                                 :handler (fn [req]
+                                            {:status 200 :body "fallback"})}]})]
+    (is (= {:status 200 :body "fallback"}
+           (app {:request-method :get :uri "/" :query-string ""})))))
