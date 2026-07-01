@@ -5,14 +5,14 @@
 (defn- method-idx ^long [method]
   (case method :get 0 :post 1 :put 2 :delete 3 :patch 4 :head 5 :options 6 -1))
 
-(defn- parse-qs [^String qs]
+(defn- parse-qs-keywords [^String qs]
   (when (and qs (not (.isEmpty qs)))
     (persistent!
       (reduce (fn [m ^String pair]
                 (let [idx (.indexOf pair "=")
                       k (if (== idx -1)
-                          (URLDecoder/decode pair "UTF-8")
-                          (URLDecoder/decode (.substring pair 0 idx) "UTF-8"))
+                          (keyword (URLDecoder/decode pair "UTF-8"))
+                          (keyword (URLDecoder/decode (.substring pair 0 idx) "UTF-8")))
                       v (if (== idx -1)
                           true
                           (URLDecoder/decode (.substring pair (inc idx)) "UTF-8"))
@@ -25,25 +25,33 @@
               (transient {})
               (.split qs "&")))))
 
-(defn- compile-qp-matcher [^String spec]
-  (let [parsed (parse-qs spec)
-        exact (into {} (remove (fn [[_ v]] (and (string? v) (.startsWith ^String v ":"))) parsed))
-        param-ks (mapv first (filter (fn [[_ v]] (and (string? v) (.startsWith ^String v ":"))) parsed))]
-    (fn [qs]
-      (let [actual (parse-qs qs)]
-        (and actual
-             (every? (fn [[k v]] (= v (get actual k))) exact)
-             (every? (fn [k] (contains? actual k)) param-ks))))))
+(defn- compile-qp-entry
+  "Parse a query-param spec into [key-set exact-constraints]. Values starting
+  with : are wildcards constrained only by key presence."
+  [^String spec]
+  (let [parsed (parse-qs-keywords spec)
+        exact (into {} (remove (fn [[_ v]] (and (string? v) (.startsWith ^String v ":"))) parsed))]
+    [(set (keys parsed)) exact]))
 
 (defn- make-dispatcher
-  "Given handlers for one method slot, returns a fn or a dispatcher map."
+  "Given handlers for one method slot, returns a plain fn or a dispatcher map.
+  Query-param candidates are subset matchers (extra request params are
+  tolerated), ordered most specific first: most required keys, then most
+  exact values."
   [entries]
-  (let [with-qp (keep (fn [e] (when (:query-params e)
-                                 [(compile-qp-matcher (:query-params e)) (:handler e)])) entries)
+  (let [with-qp (keep (fn [e]
+                        (when-let [spec (:query-params e)]
+                          (let [[key-set exact] (compile-qp-entry spec)]
+                            {:key-set key-set :exact exact :handler (:handler e)})))
+                      entries)
         fallback (:handler (first (remove :query-params entries)))]
     (if (empty? with-qp)
       fallback
-      {:qp-handlers (vec with-qp) :fallback fallback})))
+      {:candidates (mapv (fn [{:keys [key-set exact handler]}] [key-set exact handler])
+                         (sort-by (fn [{:keys [key-set exact]}]
+                                    [(- (count key-set)) (- (count exact))])
+                                  with-qp))
+       :fallback   fallback})))
 
 (deftype TrieNode [^HashMap children param-child param-key ^objects handlers param-builder])
 
@@ -189,47 +197,38 @@
         (.put cache path arr)))
     cache))
 
-(defn- parse-qs-keywords [^String qs]
-  (when (and qs (not (.isEmpty qs)))
-    (persistent!
-      (reduce (fn [m ^String pair]
-                (let [idx (.indexOf pair "=")
-                      k (if (== idx -1)
-                          (keyword (URLDecoder/decode pair "UTF-8"))
-                          (keyword (URLDecoder/decode (.substring pair 0 idx) "UTF-8")))
-                      v (if (== idx -1)
-                          true
-                          (URLDecoder/decode (.substring pair (inc idx)) "UTF-8"))
-                      existing (get m k ::none)]
-                  (assoc! m k (case existing
-                                ::none v
-                                (if (vector? existing)
-                                  (conj existing v)
-                                  [existing v])))))
-              (transient {})
-              (.split qs "&")))))
-
 (defn- resolve-handler
-  "Given a slot value (plain fn or dispatcher map), resolve to [handler query-params-map]."
+  "Given a slot value (plain fn or dispatcher map), resolve to [handler query-params-map].
+  The query string is parsed once; candidates are scanned most specific first,
+  and a candidate matches when its required keys are present and its exact
+  values agree — extra request params are tolerated."
   [slot request]
-  (let [qs (:query-string request)
-        parsed (parse-qs-keywords qs)]
-    (cond
-      (fn? slot) [slot parsed]
-      (map? slot) (if-let [h (when qs
-                               (some (fn [[matcher h]] (when (matcher qs) h))
-                                     (:qp-handlers slot)))]
-                    [h parsed]
-                    (when-let [fb (:fallback slot)] [fb parsed]))
-      :else nil)))
+  (when slot
+    (let [parsed (parse-qs-keywords (:query-string request))]
+      (if (fn? slot)
+        [slot parsed]
+        (if-let [h (when parsed
+                     (some (fn [[key-set exact handler]]
+                             (when (and (every? (fn [k] (contains? parsed k)) key-set)
+                                        (every? (fn [[k v]] (= v (get parsed k))) exact))
+                               handler))
+                           (:candidates slot)))]
+          [h parsed]
+          (when-let [fb (:fallback slot)] [fb parsed]))))))
 
 (def ^:private not-found
   {:status 404 :body "Not found" :headers {"content-type" "text/html"}})
 
 (def ^:private empty-params {})
 
-(defn route
-  [route-specs]
+(defn- apply-after [after request response]
+  (if after (after request response) response))
+
+(defn- wrap-respond [after request respond]
+  (if after (fn [response] (respond (after request response))) respond))
+
+(defn- compile-route
+  [route-specs after]
   (let [^HashMap static-cache (create-static-cache route-specs)
         ^TrieNode trie (create-param-trie route-specs)]
     (fn [request]
@@ -238,20 +237,30 @@
             midx (method-idx method)]
         (if-let [^objects methods (.get static-cache uri)]
           (if-let [[handler qp] (resolve-handler (aget methods midx) request)]
-            (handler (assoc request :params empty-params :query-params (or qp {})))
-            not-found)
+            (let [request (assoc request :params empty-params :query-params (or qp {}))]
+              (apply-after after request (handler request)))
+            (apply-after after request not-found))
           (let [^objects segs (fast-split-arr uri)
                 result (trie-match trie segs (alength segs) midx)]
             (if result
               (let [[slot params] result
                     [handler qp] (resolve-handler slot request)]
                 (if handler
-                  (handler (assoc request :params params :query-params (or qp {})))
-                  not-found))
-              not-found)))))))
+                  (let [request (assoc request :params params :query-params (or qp {}))]
+                    (apply-after after request (handler request)))
+                  (apply-after after request not-found)))
+              (apply-after after request not-found))))))))
 
-(defn async-route
-  [route-specs]
+(defn route
+  ([route-specs] (route route-specs nil))
+  ([route-specs {:keys [before after]}]
+   (let [handler (compile-route route-specs after)]
+     (if before
+       (fn [request] (handler (before request)))
+       handler))))
+
+(defn- compile-async-route
+  [route-specs after]
   (let [^HashMap static-cache (create-static-cache route-specs)
         ^TrieNode trie (create-param-trie route-specs)]
     (fn [request respond raise]
@@ -260,17 +269,27 @@
             midx (method-idx method)]
         (if-let [^objects methods (.get static-cache uri)]
           (if-let [[handler qp] (resolve-handler (aget methods midx) request)]
-            (handler (assoc request :params empty-params :query-params (or qp {})) respond raise)
-            (respond not-found))
+            (let [request (assoc request :params empty-params :query-params (or qp {}))]
+              (handler request (wrap-respond after request respond) raise))
+            (respond (apply-after after request not-found)))
           (let [^objects segs (fast-split-arr uri)
                 result (trie-match trie segs (alength segs) midx)]
             (if result
               (let [[slot params] result
                     [handler qp] (resolve-handler slot request)]
                 (if handler
-                  (handler (assoc request :params params :query-params (or qp {})) respond raise)
-                  (respond not-found)))
-              (respond not-found))))))))
+                  (let [request (assoc request :params params :query-params (or qp {}))]
+                    (handler request (wrap-respond after request respond) raise))
+                  (respond (apply-after after request not-found))))
+              (respond (apply-after after request not-found)))))))))
+
+(defn async-route
+  ([route-specs] (async-route route-specs nil))
+  ([route-specs {:keys [before after]}]
+   (let [handler (compile-async-route route-specs after)]
+     (if before
+       (fn [request respond raise] (handler (before request) respond raise))
+       handler))))
 
 (defn- create-route [method handler] {:method method :handler handler})
 (defn GET [h] (create-route :get h))

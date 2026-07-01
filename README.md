@@ -55,6 +55,58 @@ Add tassu to dependency list
 
 Async handlers follow the standard Ring async signature `[request respond raise]`. Call `respond` with a response map on success, or `raise` with a `Throwable` on failure. The server adapter must support Ring async — Jetty, http-kit, and Aleph all do.
 
+### Path parameters
+
+Path segments starting with `:` are captured into `:params` as a map of keyword to string:
+
+```clojure
+(def handler
+  (route {"/users/:user" [(GET (fn [req]
+                                 {:status 200
+                                  :body   (:user (:params req))}))]}))
+```
+
+### Query-param routing
+
+Routes can also dispatch on query params by adding `:query-params` to an entry map:
+
+```clojure
+(def handler
+  (route {"/products" [{:method       :get
+                        :query-params "category=shoes&size=:size"
+                        :handler      (fn [req]
+                                        {:status 200
+                                         :body   (:size (:query-params req))})}
+                       {:method  :get
+                        :handler (fn [req]
+                                   {:status 200
+                                    :body   "all products"})}]}))
+```
+
+- `category=shoes` requires `category` to be present with the exact value `shoes`.
+- `size=:size` requires `size` to be present with any value.
+- `verbose` (no `=`) requires the flag to be present; its value is `true`.
+
+A request matches an entry when all of its required params are satisfied — extra params such as `utm_source` are tolerated. When several entries match, the most specific one wins: most required params first, then most exact values. If no entry matches, the entry without `:query-params` acts as a fallback; without one, the router responds 404.
+
+Handlers receive the parsed query params in `:query-params` as a map of keyword to string. Repeated keys collect into a vector.
+
+Both `route` and `async-route` accept an options map with `:before` and `:after` hooks:
+
+```clojure
+(def handler
+  (route {"/users/:id" [(GET (fn [req]
+                               {:status 200
+                                :body   (:id (:params req))}))]}
+         {:before (fn [req]
+                    (assoc-in req [:headers "x-request-id"] (str (random-uuid))))
+          :after  (fn [req response]
+                    (assoc-in response [:headers "x-served-by"] "tassu"))}))
+```
+
+- `:before` takes the request and returns a (possibly modified) request. It runs before route matching, so it can rewrite `:uri` to affect routing.
+- `:after` takes the request and the response, and returns a (possibly modified) response. It receives the request exactly as the matched handler saw it — including `:params` and `:query-params` — and runs on every response, including the built-in 404 (where no `:params` are present since no route matched). In `async-route`, `:after` wraps `respond`; errors delivered via `raise` bypass it.
+
 ## License
 
 Copyright © 2025 [ruroru](https://github.com/ruroru)

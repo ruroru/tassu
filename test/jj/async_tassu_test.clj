@@ -211,6 +211,106 @@
     (is (= {:status 200 :body "default"}
            (call-async app (request "/"))))))
 
+(deftest async-query-params-overmatching
+  (testing "request with more params than the spec still matches"
+    (let [app (router/async-route {"/" [{:method       :get
+                                         :query-params "a=1&b=:b"
+                                         :handler      (fn [req res rej]
+                                                         (res {:status 200 :body "spec"}))}
+                                        {:method  :get
+                                         :handler (fn [req res rej]
+                                                    (res {:status 200 :body "fallback"}))}]})]
+      (is (= {:status 200 :body "spec"}
+             (call-async app (request-with-query-params "/" "a=1&b=2"))))
+      (is (= {:status 200 :body "spec"}
+             (call-async app (request-with-query-params "/" "a=1&b=2&c=3"))))))
+  (testing "extra params match even without a fallback"
+    (let [app (router/async-route {"/" [{:method       :get
+                                         :query-params "a=1"
+                                         :handler      (fn [req res rej]
+                                                         (res {:status 200 :body "spec"}))}]})]
+      (is (= {:status 200 :body "spec"}
+             (call-async app (request-with-query-params "/" "a=1&b=2"))))))
+  (testing "extra params do not rescue a failed value constraint"
+    (let [app (router/async-route {"/" [{:method       :get
+                                         :query-params "a=1"
+                                         :handler      (fn [req res rej]
+                                                         (res {:status 200 :body "spec"}))}]})]
+      (is (= default-not-found
+             (call-async app (request-with-query-params "/" "a=2&b=2")))))))
+
+(deftest async-query-params-undermatching
+  (testing "request with fewer params than the spec falls back"
+    (let [app (router/async-route {"/" [{:method       :get
+                                         :query-params "a=1&b=:b"
+                                         :handler      (fn [req res rej]
+                                                         (res {:status 200 :body "spec"}))}
+                                        {:method  :get
+                                         :handler (fn [req res rej]
+                                                    (res {:status 200 :body "fallback"}))}]})]
+      (is (= {:status 200 :body "fallback"}
+             (call-async app (request-with-query-params "/" "a=1"))))
+      (is (= {:status 200 :body "fallback"}
+             (call-async app (request-with-query-params "/" "b=2"))))))
+  (testing "request with fewer params and no fallback is not found"
+    (let [app (router/async-route {"/" [{:method       :get
+                                         :query-params "a=:a&b=:b"
+                                         :handler      (fn [req res rej]
+                                                         (res {:status 200 :body "spec"}))}]})]
+      (is (= default-not-found
+             (call-async app (request-with-query-params "/" "a=1"))))
+      (is (= default-not-found
+             (call-async app (request "/")))))))
+
+(deftest async-before-hook-transforms-request
+  (let [app (router/async-route {"/" [(GET (fn [req res rej]
+                                             (res {:status 200
+                                                   :body   (get-in req [:headers "x-added"])})))]}
+                                {:before (fn [req] (assoc-in req [:headers "x-added"] "by-before"))})]
+    (is (= {:status 200 :body "by-before"}
+           (call-async app (request "/"))))))
+
+(deftest async-after-hook-transforms-response
+  (let [app (router/async-route {"/" [(GET (fn [req res rej]
+                                             (res {:status 200 :body "ok"})))]}
+                                {:after (fn [req response]
+                                          (assoc-in response [:headers "x-uri"] (:uri req)))})]
+    (is (= {:status 200 :body "ok" :headers {"x-uri" "/"}}
+           (call-async app (request "/"))))))
+
+(deftest async-after-hook-runs-on-not-found
+  (let [app (router/async-route {}
+                                {:after (fn [req response] (assoc response :body "custom not found"))})]
+    (is (= (assoc default-not-found :body "custom not found")
+           (call-async app (request "/missing"))))))
+
+(deftest async-after-hook-sees-params-and-query-params
+  (let [app (router/async-route {"/users/:id" [(GET (fn [req res rej]
+                                                      (res {:status 200 :body "ok"})))]}
+                                {:after (fn [req response]
+                                          (is (= {:id "42"} (:params req)))
+                                          (is (= {:detail "full"} (:query-params req)))
+                                          response)})]
+    (is (= {:status 200 :body "ok"}
+           (call-async app (request-with-query-params "/users/42" "detail=full"))))))
+
+(deftest async-before-and-after-hooks-compose
+  (let [app (router/async-route {"/" [(GET (fn [req res rej]
+                                             (res {:status 200
+                                                   :body   (get-in req [:headers "x-added"])})))]}
+                                {:before (fn [req] (assoc-in req [:headers "x-added"] "by-before"))
+                                 :after  (fn [req response]
+                                           (assoc-in response [:headers "x-echo"]
+                                                     (get-in req [:headers "x-added"])))})]
+    (is (= {:status 200 :body "by-before" :headers {"x-echo" "by-before"}}
+           (call-async app (request "/"))))))
+
+(deftest async-raise-bypasses-after-hook
+  (let [app (router/async-route {"/" [(GET (fn [req res rej]
+                                             (rej (ex-info "boom" {}))))]}
+                                {:after (fn [req response] (assoc response :body "should not run"))})]
+    (is (thrown? ExceptionInfo (call-async app (request "/"))))))
+
 (deftest async-query-params-duplicate-keys
   (let [app (router/async-route {"/" [{:method  :get
                                        :handler (fn [req res rej]
