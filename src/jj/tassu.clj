@@ -216,7 +216,7 @@
           [h parsed]
           (when-let [fb (:fallback slot)] [fb parsed]))))))
 
-(def ^:private not-found
+(defn- default-not-found [_]
   {:status 404 :body "Not found" :headers {"content-type" "text/html"}})
 
 (def ^:private empty-params {})
@@ -228,7 +228,7 @@
   (if after (fn [response] (respond (after request response))) respond))
 
 (defn- compile-route
-  [route-specs after]
+  [route-specs after not-found]
   (let [^HashMap static-cache (create-static-cache route-specs)
         ^TrieNode trie (create-param-trie route-specs)]
     (fn [request]
@@ -239,7 +239,7 @@
           (if-let [[handler qp] (resolve-handler (aget methods midx) request)]
             (let [request (assoc request :params empty-params :query-params (or qp {}))]
               (apply-after after request (handler request)))
-            (apply-after after request not-found))
+            (apply-after after request (not-found request)))
           (let [^objects segs (fast-split-arr uri)
                 result (trie-match trie segs (alength segs) midx)]
             (if result
@@ -248,19 +248,19 @@
                 (if handler
                   (let [request (assoc request :params params :query-params (or qp {}))]
                     (apply-after after request (handler request)))
-                  (apply-after after request not-found)))
-              (apply-after after request not-found))))))))
+                  (apply-after after request (not-found request))))
+              (apply-after after request (not-found request)))))))))
 
 (defn route
   ([route-specs] (route route-specs nil))
-  ([route-specs {:keys [before after]}]
-   (let [handler (compile-route route-specs after)]
+  ([route-specs {:keys [before after not-found]}]
+   (let [handler (compile-route route-specs after (or not-found default-not-found))]
      (if before
        (fn [request] (handler (before request)))
        handler))))
 
 (defn- compile-async-route
-  [route-specs after]
+  [route-specs after not-found]
   (let [^HashMap static-cache (create-static-cache route-specs)
         ^TrieNode trie (create-param-trie route-specs)]
     (fn [request respond raise]
@@ -271,7 +271,7 @@
           (if-let [[handler qp] (resolve-handler (aget methods midx) request)]
             (let [request (assoc request :params empty-params :query-params (or qp {}))]
               (handler request (wrap-respond after request respond) raise))
-            (respond (apply-after after request not-found)))
+            (respond (apply-after after request (not-found request))))
           (let [^objects segs (fast-split-arr uri)
                 result (trie-match trie segs (alength segs) midx)]
             (if result
@@ -280,13 +280,13 @@
                 (if handler
                   (let [request (assoc request :params params :query-params (or qp {}))]
                     (handler request (wrap-respond after request respond) raise))
-                  (respond (apply-after after request not-found))))
-              (respond (apply-after after request not-found)))))))))
+                  (respond (apply-after after request (not-found request)))))
+              (respond (apply-after after request (not-found request))))))))))
 
 (defn async-route
   ([route-specs] (async-route route-specs nil))
-  ([route-specs {:keys [before after]}]
-   (let [handler (compile-async-route route-specs after)]
+  ([route-specs {:keys [before after not-found]}]
+   (let [handler (compile-async-route route-specs after (or not-found default-not-found))]
      (if before
        (fn [request respond raise] (handler (before request) respond raise))
        handler))))

@@ -402,6 +402,49 @@
       (is (= {:status 200 :body "by-before" :headers {"x-echo" "by-before"}}
              (app (request "/")))))))
 
+(deftest custom-not-found-handler
+  (let [app (router/route {"/" [(GET (fn [req] {:status 200 :body "ok"}))]}
+                          {:not-found (fn [req]
+                                        {:status  404
+                                         :headers {"content-type" "application/json"}
+                                         :body    (format "{\"error\":\"no route for %s\"}" (:uri req))})})]
+    (testing "matched routes are unaffected"
+      (is (= {:status 200 :body "ok"}
+             (app (request "/")))))
+    (testing "unmatched path uses the custom handler"
+      (is (= {:status  404
+              :headers {"content-type" "application/json"}
+              :body    "{\"error\":\"no route for /missing\"}"}
+             (app (request "/missing")))))
+    (testing "method mismatch on a matched path uses the custom handler"
+      (is (= {:status  404
+              :headers {"content-type" "application/json"}
+              :body    "{\"error\":\"no route for /\"}"}
+             (app (request "/" :post)))))))
+
+(deftest custom-not-found-on-parameterized-routes
+  (let [app (router/route {"/users/:id" [(GET (fn [req] {:status 200 :body "ok"}))]}
+                          {:not-found (fn [req] {:status 404 :body "custom"})})]
+    (testing "method mismatch on a trie-matched path uses the custom handler"
+      (is (= {:status 404 :body "custom"}
+             (app (request "/users/42" :delete)))))))
+
+(deftest custom-not-found-on-query-param-mismatch
+  (let [app (router/route {"/" [{:method       :get
+                                 :query-params "a=1"
+                                 :handler      (fn [req] {:status 200 :body "spec"})}]}
+                          {:not-found (fn [req] {:status 404 :body "custom"})})]
+    (is (= {:status 404 :body "custom"}
+           (app (request-with-query-params "/" "a=2"))))))
+
+(deftest after-hook-wraps-custom-not-found
+  (let [app (router/route {}
+                          {:not-found (fn [req] {:status 404 :body "custom"})
+                           :after     (fn [req response]
+                                        (assoc-in response [:headers "x-served-by"] "tassu"))})]
+    (is (= {:status 404 :body "custom" :headers {"x-served-by" "tassu"}}
+           (app (request "/missing"))))))
+
 (deftest query-params-empty-query-string
   (let [app (router/route {"/" [{:method       :get
                                  :query-params "x=1"

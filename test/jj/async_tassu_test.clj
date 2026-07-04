@@ -311,6 +311,46 @@
                                 {:after (fn [req response] (assoc response :body "should not run"))})]
     (is (thrown? ExceptionInfo (call-async app (request "/"))))))
 
+(deftest async-custom-not-found-handler
+  (let [app (router/async-route {"/" [(GET (fn [req res rej]
+                                             (res {:status 200 :body "ok"})))]}
+                                {:not-found (fn [req]
+                                              {:status 404
+                                               :body   (str "no route for " (:uri req))})})]
+    (testing "matched routes are unaffected"
+      (is (= {:status 200 :body "ok"}
+             (call-async app (request "/")))))
+    (testing "unmatched path uses the custom handler"
+      (is (= {:status 404 :body "no route for /missing"}
+             (call-async app (request "/missing")))))
+    (testing "method mismatch on a matched path uses the custom handler"
+      (is (= {:status 404 :body "no route for /"}
+             (call-async app (request "/" :post)))))))
+
+(deftest async-custom-not-found-on-parameterized-routes
+  (let [app (router/async-route {"/users/:id" [(GET (fn [req res rej]
+                                                      (res {:status 200 :body "ok"})))]}
+                                {:not-found (fn [req] {:status 404 :body "custom"})})]
+    (is (= {:status 404 :body "custom"}
+           (call-async app (request "/users/42" :delete))))))
+
+(deftest async-custom-not-found-on-query-param-mismatch
+  (let [app (router/async-route {"/" [{:method       :get
+                                       :query-params "a=1"
+                                       :handler      (fn [req res rej]
+                                                       (res {:status 200 :body "spec"}))}]}
+                                {:not-found (fn [req] {:status 404 :body "custom"})})]
+    (is (= {:status 404 :body "custom"}
+           (call-async app (request-with-query-params "/" "a=2"))))))
+
+(deftest async-after-hook-wraps-custom-not-found
+  (let [app (router/async-route {}
+                                {:not-found (fn [req] {:status 404 :body "custom"})
+                                 :after     (fn [req response]
+                                              (assoc-in response [:headers "x-served-by"] "tassu"))})]
+    (is (= {:status 404 :body "custom" :headers {"x-served-by" "tassu"}}
+           (call-async app (request "/missing"))))))
+
 (deftest async-query-params-duplicate-keys
   (let [app (router/async-route {"/" [{:method  :get
                                        :handler (fn [req res rej]

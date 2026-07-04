@@ -107,6 +107,21 @@ Both `route` and `async-route` accept an options map with `:before` and `:after`
 - `:before` takes the request and returns a (possibly modified) request. It runs before route matching, so it can rewrite `:uri` to affect routing.
 - `:after` takes the request and the response, and returns a (possibly modified) response. It receives the request exactly as the matched handler saw it — including `:params` and `:query-params` — and runs on every response, including the built-in 404 (where no `:params` are present since no route matched). In `async-route`, `:after` wraps `respond`; errors delivered via `raise` bypass it.
 
+### Custom not found
+
+The options map also accepts `:not-found`, a function of the request that returns the response used when no route matches:
+
+```clojure
+(def handler
+  (route {"/" [(GET (fn [req] {:status 200 :body "Foo"}))]}
+         {:not-found (fn [req]
+                       {:status  404
+                        :headers {"content-type" "application/json"}
+                        :body    (str "{\"error\":\"no route for " (:uri req) "\"}")})}))
+```
+
+It fires whenever the router would otherwise respond 404: unknown path, method mismatch on a known path, or unsatisfied query-param constraints. The request it receives has no `:params` or `:query-params`, since nothing matched. In `async-route` it is the same synchronous `request -> response` function. The `:after` hook, if present, wraps its response like any other. To serve a static page, use `(constantly {:status 404 :body page})`.
+
 ## License
 
 Copyright © 2025 [ruroru](https://github.com/ruroru)
